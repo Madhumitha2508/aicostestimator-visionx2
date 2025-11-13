@@ -1,4 +1,4 @@
-// server.js (robust, safe)
+// server.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -7,8 +7,8 @@ const bodyParser = require("body-parser");
 let OpenAI;
 try {
   OpenAI = require("openai");
-} catch (err) {
-  // openai not installed — we'll still allow basic functionality
+} catch {
+  console.warn("⚠️ openai package not found. Install with: npm install openai");
   OpenAI = null;
 }
 
@@ -18,7 +18,15 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(bodyParser.json());
 
-function sampleTotalsFromInputs({ tuition = 0, months = 12, rent = 0, food = 0, transport = 0, scholarship = 0 }) {
+// --- Monte Carlo Simulation for Cost Estimation ---
+function sampleTotalsFromInputs({
+  tuition = 0,
+  months = 12,
+  rent = 0,
+  food = 0,
+  transport = 0,
+  scholarship = 0
+}) {
   function randn_bm(mean = 0, std = 1) {
     let u = 0, v = 0;
     while (u === 0) u = Math.random();
@@ -41,7 +49,7 @@ function sampleTotalsFromInputs({ tuition = 0, months = 12, rent = 0, food = 0, 
     const misc = 100;
     const monthlyTotal = r + f + tr + utilities + misc;
     const livingTotal = monthlyTotal * months;
-    const oneTime = 200 + 800 + 500;
+    const oneTime = 200 + 800 + 500; // visa + flight + setup
     totals.push(tuition + livingTotal + oneTime - scholarship);
   }
 
@@ -53,6 +61,7 @@ function sampleTotalsFromInputs({ tuition = 0, months = 12, rent = 0, food = 0, 
   };
 }
 
+// --- POST: /api/estimate ---
 app.post("/api/estimate", async (req, res) => {
   try {
     const body = req.body || {};
@@ -63,85 +72,66 @@ app.post("/api/estimate", async (req, res) => {
     const transport = Number(body.monthly?.transport) || 0;
     const scholarship = Number(body.scholarship) || 0;
 
-    // get numeric safe values
     const inputs = { tuition, months, rent, food, transport, scholarship };
-
-    // compute deterministic median living too
     const livingMedian = Math.round((rent + food + transport + 70 + 100) * months);
-
-    // Monte Carlo totals
     const totals = sampleTotalsFromInputs(inputs);
 
-    // Default recommendations (fallback)
     let recommendations = [
-      "Consider shared housing (could reduce rent by ~25–40%).",
-      "Apply for university / local scholarships early.",
-      "Cook at home to reduce food costs.",
-      "Look for on-campus part-time roles if eligible.",
-      "Shop around for student travel/health insurance."
+      "Consider shared housing (reduce rent by 25–40%).",
+      "Apply early for university or local scholarships.",
+      "Cook at home to save 30–50% on food costs.",
+      "Look for part-time campus jobs if eligible.",
+      "Compare travel/health insurance for student discounts."
     ];
 
-    // If OpenAI installed and API key present, try to call it.
+    // --- Optional: OpenAI Smart Recommendations ---
     if (OpenAI && process.env.OPENAI_API_KEY) {
       try {
         const client = new OpenAI.OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        // Compose simple prompt (ask for JSON array)
         const aiPrompt = `
-You are a helpful cost advisor for international students.
+You are a cost advisor for international students.
 Tuition: ${tuition} USD
-Monthly: rent ${rent}, food ${food}, transport ${transport}
+Monthly costs: rent ${rent}, food ${food}, transport ${transport}
 Scholarship: ${scholarship} USD
 Duration: ${months} months
-Return 5 short actionable tips as a JSON array of strings only.
+Return exactly 5 short actionable money-saving tips as a JSON array of strings.
 `;
 
-        // Support both older and newer package shapes: try chat.completions first (many versions support it)
-        let aiResultText = null;
-        if (client.chat && client.chat.completions && typeof client.chat.completions.create === "function") {
-          // older style
+        let aiText = null;
+
+        // Support both SDK shapes
+        if (client.chat?.completions?.create) {
           const aiResp = await client.chat.completions.create({
-            model: "gpt-4",
+            model: "gpt-4o-mini",
             messages: [
-              { role: "system", content: "You are a helpful cost estimator assistant." },
+              { role: "system", content: "You are a cost estimation assistant." },
               { role: "user", content: aiPrompt }
             ],
             temperature: 0.7
           });
-          aiResultText = aiResp?.choices?.[0]?.message?.content;
-        } else if (typeof client.responses === "object" && typeof client.responses.create === "function") {
-          // newer OpenAI SDK (responses API)
+          aiText = aiResp.choices?.[0]?.message?.content;
+        } else if (client.responses?.create) {
           const aiResp = await client.responses.create({
-            model: "gpt-4",
+            model: "gpt-4o-mini",
             input: aiPrompt,
             temperature: 0.7
           });
-          aiResultText = aiResp?.output?.[0]?.content?.[0]?.text || aiResp?.output_text;
-        } else {
-          // unknown client shape — skip
-          aiResultText = null;
+          aiText = aiResp.output?.[0]?.content?.[0]?.text || aiResp.output_text;
         }
 
-        if (aiResultText) {
+        if (aiText) {
           try {
-            const parsed = JSON.parse(aiResultText);
-            if (Array.isArray(parsed) && parsed.length > 0) recommendations = parsed;
-          } catch (e) {
-            // Not valid JSON — try to extract lines
-            const lines = aiResultText.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-            if (lines.length >= 1) {
-              // take first 5 non-empty lines as fallback
-              recommendations = lines.slice(0, 5).map(l => l.replace(/^\d+[\.\)]\s*/, ""));
-            }
+            const parsed = JSON.parse(aiText);
+            if (Array.isArray(parsed)) recommendations = parsed;
+          } catch {
+            const lines = aiText.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            if (lines.length >= 1) recommendations = lines.slice(0, 5);
           }
         }
-      } catch (aiErr) {
-        console.error("OpenAI call failed:", aiErr && aiErr.message ? aiErr.message : aiErr);
-        // keep default recommendations
+      } catch (e) {
+        console.error("⚠️ OpenAI request failed:", e.message);
       }
-    } else {
-      if (!OpenAI) console.warn("openai package is not installed. Install with: npm install openai");
-      if (!process.env.OPENAI_API_KEY) console.warn("OPENAI_API_KEY not found in environment variables.");
     }
 
     const response = {
@@ -165,13 +155,17 @@ Return 5 short actionable tips as a JSON array of strings only.
       recommendations
     };
 
-    return res.json(response);
+    res.json(response);
   } catch (err) {
-    console.error("Unhandled server error:", err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: "Internal server error", details: err && err.message ? err.message : String(err) });
+    console.error("❌ Internal server error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("✅ AI Cost Estimator backend is running successfully!");
+});
+
 app.listen(PORT, () => {
-  console.log(`Estimator backend listening on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
