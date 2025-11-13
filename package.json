@@ -1,0 +1,24 @@
+{
+  "name": "cost-estimator-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "body-parser": "^2.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "openai": "^6.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  },
+  "description": "",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
